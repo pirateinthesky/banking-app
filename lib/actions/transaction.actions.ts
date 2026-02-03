@@ -1,75 +1,64 @@
-"use server";
+'use server';
 
-import { ID, Query } from "node-appwrite";
-import { createAdminClient } from "../appwrite";
+import { db } from "@/lib/db";
 import { parseStringify } from "../utils";
 
-const {
-  APPWRITE_DATABASE_ID: DATABASE_ID,
-  APPWRITE_TRANSACTION_COLLECTION_ID: TRANSACTION_COLLECTION_ID,
-} = process.env;
-
-// 1. Transaction Oluşturma Fonksiyonu (Veritabanına Kayıt)
+// --- 1. İŞLEM OLUŞTUR ---
 export const createTransaction = async (transaction: CreateTransactionProps) => {
   try {
-    const { database } = await createAdminClient();
+    if (!transaction.senderId) {
+      throw new Error("Transaction failed: Sender ID is missing.");
+    }
 
-    const newTransaction = await database.createDocument(
-      DATABASE_ID!,
-      TRANSACTION_COLLECTION_ID!,
-      ID.unique(),
-      {
+    const newTransaction = await db.transaction.create({
+      data: {
         channel: 'online',
         category: 'Transfer',
-        
-        // Verileri açıkça eşleştiriyoruz (Hata riskini sıfırlar)
         name: transaction.name,
-        amount: transaction.amount,
+        amount: Number(transaction.amount),
+        date: new Date(),
         senderId: transaction.senderId,
         senderBankId: transaction.senderBankId,
         receiverId: transaction.receiverId,
         receiverBankId: transaction.receiverBankId,
         email: transaction.email,
-        userId: transaction.senderId,
-        bankId: transaction.bankId,
+        user: {
+          connect: { id: transaction.senderId }
+        }
       }
-    )
+    });
 
     return parseStringify(newTransaction);
   } catch (error) {
-    console.log("Create Transaction Error:", error);
-    // Hatayı sessizce yutmak yerine fırlatalım ki Form tarafında yakalayabilelim (Opsiyonel)
-    // throw error; 
+    console.log("Transaction oluşturma hatası:", error);
+    return null; 
   }
 }
 
-// 2. Banka ID'sine Göre İşlemleri Listeleme
+// --- 2. BANKA İŞLEMLERİNİ GETİR (LİSTE DÜZELTMESİ) ---
 export const getTransactionsByBankId = async ({bankId}: getTransactionsByBankIdProps) => {
   try {
-    const { database } = await createAdminClient();
+    const senderTransactions = await db.transaction.findMany({
+      where: {
+        senderBankId: bankId,
+      }
+    })
 
-    const senderTransactions = await database.listDocuments(
-      DATABASE_ID!,
-      TRANSACTION_COLLECTION_ID!,
-      [Query.equal('senderBankId', bankId)],
-    )
+    const receiverTransactions = await db.transaction.findMany({
+      where: {
+        receiverBankId: bankId,
+      }
+    });
 
-    const receiverTransactions = await database.listDocuments(
-      DATABASE_ID!,
-      TRANSACTION_COLLECTION_ID!,
-      [Query.equal('receiverBankId', bankId)],
-    );
-
-    const transactions = {
-      total: senderTransactions.total + receiverTransactions.total,
-      documents: [
-        ...senderTransactions.documents, 
-        ...receiverTransactions.documents,
-      ]
-    }
+    // DÜZELTME: Obje değil, direkt işlemlerin olduğu LİSTEYİ dönüyoruz.
+    const transactions = [
+        ...senderTransactions, 
+        ...receiverTransactions,
+    ];
 
     return parseStringify(transactions);
   } catch (error) {
     console.log(error);
+    return []; // Hata durumunda boş liste dön
   }
 }

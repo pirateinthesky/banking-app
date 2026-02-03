@@ -9,7 +9,7 @@ import * as z from "zod";
 
 import { createTransfer } from "@/lib/actions/dwolla.actions";
 import { createTransaction } from "@/lib/actions/transaction.actions";
-import { getBank, getBankByAccountId } from "@/lib/actions/user.actions";
+import { getBankByAccountId } from "@/lib/actions/user.actions";
 import { decryptId } from "@/lib/utils";
 
 import { BankDropdown } from "./BankDropdown";
@@ -27,11 +27,11 @@ import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 
 const formSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  email: z.string().email("Please enter a valid email address"),
   name: z.string().min(4, "Transfer note is too short"),
   amount: z.string().min(4, "Amount is too short"),
   senderBank: z.string().min(4, "Please select a valid bank account"),
-  sharableId: z.string().min(8, "Please select a valid sharable Id"),
+  sharableId: z.string().optional(),
 });
 
 const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
@@ -49,60 +49,63 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
     },
   });
 
-  // components/PaymentTransferForm.tsx içindeki submit fonksiyonu
-
   const submit = async (data: z.infer<typeof formSchema>) => {
     setIsLoading(true);
 
     try {
-      const receiverAccountId = decryptId(data.sharableId);
-      const receiverBank = await getBankByAccountId({
-        accountId: receiverAccountId,
+      const receiverAccount = await getBankByAccountId({
+        accountId: data.sharableId,
       });
-      const senderBank = await getBank({ documentId: data.senderBank });
 
-      if(!receiverBank || !senderBank) {
-         console.error("Banka bilgileri alınamadı.");
-         setIsLoading(false);
-         return;
+      if (!receiverAccount && !data.email) {
+        console.log("Alıcı bulunamadı");
+        return;
       }
 
-      // --- DÜZELTME BURADA: ID'yi güvenli şekilde alıyoruz ---
-      // Eğer userId bir nesneyse (.$id) onu al, değilse kendisini (string) al.
-      const senderUserId = senderBank.userId.$id || senderBank.userId;
-      const receiverUserId = receiverBank.userId.$id || receiverBank.userId;
-      // -----------------------------------------------------
+      const receiverId = receiverAccount ? receiverAccount.userId : "0";
+      
+      // --- DÜZELTME BURADA ---
+      // Eskiden receiverAccount.id (UUID) alıyorduk.
+      // Şimdi receiverAccount.accountId (Plaid ID) alıyoruz ki eşleşme sağlansın.
+      const receiverBankId = receiverAccount ? receiverAccount.accountId : "0";
+      // -----------------------
+
+      // Gönderen bankayı bul
+      const senderBank = accounts.find((bank) => bank.appwriteItemId === data.senderBank);
+      
+      if(!senderBank) {
+        throw new Error("Sender bank not found");
+      }
+
+      // Dwolla URL veya Email mantığı
+      let destinationUrl = "";
+      if (receiverAccount) {
+        destinationUrl = receiverAccount.fundingSourceUrl;
+      } else {
+        destinationUrl = senderBank.fundingSourceUrl; 
+      }
 
       const transferParams = {
         sourceFundingSourceUrl: senderBank.fundingSourceUrl,
-        destinationFundingSourceUrl: receiverBank.fundingSourceUrl,
+        destinationFundingSourceUrl: destinationUrl,
         amount: data.amount,
-        name: data.name,
-        email: data.email,
-        senderId: senderUserId,
-        senderBankId: senderBank.$id,
-        receiverId: receiverUserId,
-        receiverBankId: receiverBank.$id,
-        bankId: senderBank.$id, // Bunu da istiyor olabilir
       };
 
       // 1. Dwolla Transferi
       const transfer = await createTransfer(transferParams);
 
-      // 2. İşlem Başarılıysa Appwrite Kaydı
       if (transfer) {
         const transaction = {
           name: data.name,
           amount: data.amount,
-          senderId: senderUserId,
-          senderBankId: senderBank.$id,
-          receiverId: receiverUserId,
-          receiverBankId: receiverBank.$id,
+          senderId: senderBank.userId,
+          senderBankId: senderBank.id, // Bu zaten Plaid ID (getAccounts'tan geliyor)
+          receiverId: receiverId,
+          receiverBankId: receiverBankId, // Artık bu da Plaid ID oldu!
           email: data.email,
-          userId: senderUserId, // Resimde 'userId' var
-          bankId: senderBank.$id, // Resimde 'bankId' var
         };
 
+        // 2. Veritabanı Kaydı
         const newTransaction = await createTransaction(transaction);
 
         if (newTransaction) {
@@ -111,7 +114,7 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
         }
       }
     } catch (error) {
-      console.error("Transfer Hatası:", error);
+      console.error("Submitting create transfer request failed: ", error);
     }
 
     setIsLoading(false);
@@ -157,7 +160,7 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
               <div className="payment-transfer_form-item pb-6 pt-5">
                 <div className="payment-transfer_form-content">
                   <FormLabel className="text-14 font-medium text-gray-700">
-                    Transfer Note (Optional)
+                    Transfer Note (Short)
                   </FormLabel>
                   <FormDescription className="text-12 font-normal text-gray-600">
                     Please provide any additional information or instructions
@@ -167,7 +170,7 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
                 <div className="flex w-full flex-col">
                   <FormControl>
                     <Textarea
-                      placeholder="Write a short note here"
+                      placeholder="Write a short note here..."
                       className="input-class"
                       {...field}
                     />
@@ -181,7 +184,7 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
 
         <div className="payment-transfer_form-details">
           <h2 className="text-18 font-semibold text-gray-900">
-            Bank account details
+            Bank Account Details
           </h2>
           <p className="text-16 font-normal text-gray-600">
             Enter the bank account details of the recipient
@@ -194,9 +197,14 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
           render={({ field }) => (
             <FormItem className="border-t border-gray-200">
               <div className="payment-transfer_form-item py-5">
-                <FormLabel className="text-14 w-full max-w-[280px] font-medium text-gray-700">
-                  Recipient&apos;s Email Address
-                </FormLabel>
+                <div className="payment-transfer_form-content">
+                  <FormLabel className="text-14 font-medium text-gray-700">
+                    Recipient&apos;s Email Address
+                  </FormLabel>
+                  <FormDescription className="text-12 font-normal text-gray-600">
+                    Ex: johndoe@gmail.com
+                  </FormDescription>
+                </div>
                 <div className="flex w-full flex-col">
                   <FormControl>
                     <Input
@@ -218,9 +226,14 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
           render={({ field }) => (
             <FormItem className="border-t border-gray-200">
               <div className="payment-transfer_form-item pb-5 pt-6">
-                <FormLabel className="text-14 w-full max-w-[280px] font-medium text-gray-700">
-                  Receiver&apos;s Plaid Sharable Id
-                </FormLabel>
+                <div className="payment-transfer_form-content">
+                  <FormLabel className="text-14 font-medium text-gray-700">
+                    Receiver&apos;s Plaid Sharable Id
+                  </FormLabel>
+                  <FormDescription className="text-12 font-normal text-gray-600">
+                    Ex: 123456789 (Optional)
+                  </FormDescription>
+                </div>
                 <div className="flex w-full flex-col">
                   <FormControl>
                     <Input
@@ -242,9 +255,14 @@ const PaymentTransferForm = ({ accounts }: PaymentTransferFormProps) => {
           render={({ field }) => (
             <FormItem className="border-y border-gray-200">
               <div className="payment-transfer_form-item py-5">
-                <FormLabel className="text-14 w-full max-w-[280px] font-medium text-gray-700">
-                  Amount
-                </FormLabel>
+                <div className="payment-transfer_form-content">
+                  <FormLabel className="text-14 font-medium text-gray-700">
+                    Amount
+                  </FormLabel>
+                  <FormDescription className="text-12 font-normal text-gray-600">
+                    Ex: 5.00
+                  </FormDescription>
+                </div>
                 <div className="flex w-full flex-col">
                   <FormControl>
                     <Input

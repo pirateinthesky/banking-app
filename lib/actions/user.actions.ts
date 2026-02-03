@@ -1,177 +1,134 @@
 'use server';
 
-import { ID, Query } from "node-appwrite";
-import { createAdminClient, createSessionClient } from "../appwrite";
-import { cookies } from "next/headers";
-import { encryptId, extractCustomerIdFromUrl, parseStringify } from "../utils";
-import { CountryCode, ProcessorTokenCreateRequest, ProcessorTokenCreateRequestProcessorEnum, Products } from "plaid";
-
-import { plaidClient } from '@/lib/plaid';
+import { signIn as nextAuthSignIn, auth } from "@/lib/auth"; 
+import { db } from "@/lib/db"; 
+import bcrypt from "bcryptjs"; 
 import { revalidatePath } from "next/cache";
+
+import { extractCustomerIdFromUrl, parseStringify, encryptId } from "../utils";
+import { CountryCode, ProcessorTokenCreateRequest, ProcessorTokenCreateRequestProcessorEnum, Products } from "plaid";
+import { plaidClient } from '@/lib/plaid';
 import { addFundingSource, createDwollaCustomer } from "./dwolla.actions";
 
-const {
-  APPWRITE_DATABASE_ID: DATABASE_ID,
-  APPWRITE_USER_COLLECTION_ID: USER_COLLECTION_ID,
-  APPWRITE_BANK_COLLECTION_ID: BANK_COLLECTION_ID,
-} = process.env;
-
+// --- 1. KULLANICI BİLGİSİNİ GETİR ---
 export const getUserInfo = async ({ userId }: getUserInfoProps) => {
   try {
-    const { database } = await createAdminClient();
+    const user = await db.user.findUnique({
+      where: {
+        id: userId
+      }
+    });
 
-    const user = await database.listDocuments(
-      DATABASE_ID!,
-      USER_COLLECTION_ID!,
-      [Query.equal('userId', [userId])]
-    )
+    if (!user) return null;
 
-    return parseStringify(user.documents[0]);
+    return parseStringify({ ...user, $id: user.id });
   } catch (error) {
     console.log(error)
   }
 }
 
+// --- 2. GİRİŞ YAP (Sign In) ---
 export const signIn = async ({ email, password }: signInProps) => {
   try {
-    const { account } = await createAdminClient();
-    
-    const session = await account.createEmailPasswordSession(email, password);
-
-    // DÜZELTME 1: cookies() await ile çağırılmalı
-    const cookieStore = await cookies();
-    cookieStore.set("appwrite-session", session.secret, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "strict",
-      secure: true,
+    const result = await nextAuthSignIn("credentials", {
+      email,
+      password,
+      redirect: false, 
     });
 
-    const user = await getUserInfo({ userId: session.userId }) 
+    if (result?.error) {
+      console.log("NextAuth Hatası:", result.error);
+      return null;
+    }
 
-    return parseStringify(user);
+    return { success: true };
   } catch (error) {
-    console.error('Error', error);
+    if ((error as Error).message.includes("NEXT_REDIRECT")) {
+        return { success: true };
+    }
+    console.error('SignIn Error', error);
+    return null;
   }
 }
 
+// --- 3. KAYIT OL (Sign Up) ---
 export const signUp = async ({ password, ...userData }: SignUpParams) => {
   const { email, firstName, lastName } = userData;
   
-  let newUserAccount;
-
   try {
-    const { account, database } = await createAdminClient();
+    const existingUser = await db.user.findUnique({
+      where: { email },
+    });
 
-    // 1. Auth Hesabını Oluştur
-    newUserAccount = await account.create(
-      ID.unique(), 
-      email, 
-      password, 
-      `${firstName} ${lastName}`
-    );
+    if (existingUser) throw new Error("User already exists");
 
-    if(!newUserAccount) throw new Error('Error creating user');
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 2. Dwolla Müşterisi Oluştur
     const dwollaCustomerUrl = await createDwollaCustomer({
       ...userData,
       type: 'personal'
-    })
-
-    if(!dwollaCustomerUrl) throw new Error('Error creating Dwolla customer');
-    
-    const dwollaCustomerId = extractCustomerIdFromUrl(dwollaCustomerUrl);
-
-    // 3. Veritabanına Kaydet
-    const newUser = await database.createDocument(
-      process.env.APPWRITE_DATABASE_ID!,
-      process.env.APPWRITE_USER_COLLECTION_ID!,
-      ID.unique(),
-      {
-        ...userData,
-        userId: newUserAccount.$id,
-        dwollaCustomerId,
-        dwollaCustomerUrl
-      }
-    )
-
-    // 4. Oturumu Başlat
-    const session = await account.createEmailPasswordSession(email, password);
-
-    (await cookies()).set("appwrite-session", session.secret, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "strict",
-      secure: true,
     });
 
-    return parseStringify(newUser);
+    if (!dwollaCustomerUrl) throw new Error('Error creating Dwolla customer');
+
+    const dwollaCustomerId = extractCustomerIdFromUrl(dwollaCustomerUrl);
+
+    const newUser = await db.user.create({
+      data: {
+        ...userData,
+        password: hashedPassword,
+        dwollaCustomerId,
+        dwollaCustomerUrl,
+      }
+    });
+
+    return parseStringify({ ...newUser, $id: newUser.id });
 
   } catch (error) {
     console.error("SignUp Hatası:", error);
-    // Eğer veritabanı kaydı başarısız olursa ve hesap oluşmuşsa, temizlik yapabilirsin (opsiyonel)
     return null;
   }
 }
 
+// --- 4. OTURUM AÇMIŞ KULLANICIYI GETİR ---
 export const getLoggedInUser = async () => {
   try {
-    const { account } = await createSessionClient();
+    const session = await auth();
     
-    // Auth bilgisini çek
-    const result = await account.get(); 
-
-    console.log("--- DEBUG START ---");
-    console.log("1. Auth Başarılı. User ID:", result.$id);
-
-    // Veritabanından kullanıcı detaylarını al
-    const user = await getUserInfo({ userId: result.$id });
-
-    if(user) {
-      console.log("2. Veritabanı Bulundu! İsim:", user.firstName);
-      console.log("--- DEBUG END ---");
-      return parseStringify(user);
-    } else {
-      console.log("2. Veritabanı BOŞ döndü! (Sorgu çalıştı ama eşleşme yok)");
-      console.log("--- DEBUG END ---");
+    if (!session || !session.user) {
       return null;
     }
+
+    const user = await db.user.findUnique({
+      where: {
+        id: session.user.id
+      }
+    });
+
+    if (!user) return null;
+
+    return parseStringify({ ...user, $id: user.id });
   } catch (error) {
-    // Sadece konsola bas, uygulamayı kırma.
-    // fetch failed hatası burada yakalanır ve null döner.
-    // Bu null dönünce de yukarıdaki page.tsx redirect yapar.
-    console.log("!!! HATA OLUŞTU (getLoggedInUser) !!!");
-    console.error(error); 
+    console.log("Oturum kontrol hatası:", error);
     return null;
   }
 }
 
+// --- 5. ÇIKIŞ YAP ---
 export const logoutAccount = async () => {
   try {
-    const { account } = await createSessionClient();
-
-    // Next.js güncel sürüm uyumluluğu için await kullanımı
-    const cookieStore = await cookies();
-    
-    // Cookie silme işlemi
-    cookieStore.delete('appwrite-session');
-
-    // Appwrite oturumunu kapatma
-    await account.deleteSession('current');
-    
-    return true; // Başarılı olduğunu belirtmek için
+    return true;
   } catch (error) {
-    console.log("Logout hatası:", error);
     return null;
   }
 }
 
+// --- 6. PLAID LINK TOKEN ---
 export const createLinkToken = async (user: User) => {
   try {
     const tokenParams = {
       user: {
-        client_user_id: user.$id
+        client_user_id: user.id || user.$id 
       },
       client_name: `${user.firstName} ${user.lastName}`,
       products: ['auth', 'transactions'] as Products[],
@@ -187,43 +144,39 @@ export const createLinkToken = async (user: User) => {
   }
 }
 
+// --- 7. BANKA HESABI OLUŞTUR (Veritabanına Kayıt) ---
 export const createBankAccount = async ({
   userId,
   bankId,
-  accountId,
+  accountId, // EKSİK OLAN PARÇA BUYDU, ARTIK BURADA
   accessToken,
   fundingSourceUrl,
   shareableId,
 }: createBankAccountProps) => {
   try {
-    const { database } = await createAdminClient();
-
-    const bankAccount = await database.createDocument(
-      DATABASE_ID!,
-      BANK_COLLECTION_ID!,
-      ID.unique(),
-      {
+    const bankAccount = await db.bankAccount.create({
+      data: {
         userId,
-        bankId,
-        accountId,
+        appwriteItemId: bankId,
         accessToken,
         fundingSourceUrl,
         shareableId,
+        accountId, // Veritabanına bunu yazıyor
       }
-    )
+    });
 
     return parseStringify(bankAccount);
   } catch (error) {
-    console.log(error);
+    console.log("Banka Kayıt Hatası:", error); // Hatayı görmek için log ekledim
   }
 }
 
+// --- 8. PUBLIC TOKEN DEĞİŞİMİ (Plaid -> DB Köprüsü) ---
 export const exchangePublicToken = async ({
   publicToken,
   user,
 }: exchangePublicTokenProps) => {
   try {
-    // Exchange public token for access token and item ID
     const response = await plaidClient.itemPublicTokenExchange({
       public_token: publicToken,
     });
@@ -231,14 +184,12 @@ export const exchangePublicToken = async ({
     const accessToken = response.data.access_token;
     const itemId = response.data.item_id;
     
-    // Get account information from Plaid using the access token
     const accountsResponse = await plaidClient.accountsGet({
       access_token: accessToken,
     });
 
     const accountData = accountsResponse.data.accounts[0];
 
-    // Create a processor token for Dwolla using the access token and account ID
     const request: ProcessorTokenCreateRequest = {
       access_token: accessToken,
       account_id: accountData.account_id,
@@ -248,30 +199,26 @@ export const exchangePublicToken = async ({
     const processorTokenResponse = await plaidClient.processorTokenCreate(request);
     const processorToken = processorTokenResponse.data.processor_token;
 
-     // Create a funding source URL for the account using the Dwolla customer ID, processor token, and bank name
      const fundingSourceUrl = await addFundingSource({
       dwollaCustomerId: user.dwollaCustomerId,
       processorToken,
       bankName: accountData.name,
     });
     
-    // If the funding source URL is not created, throw an error
     if (!fundingSourceUrl) throw Error;
 
-    // Create a bank account using the user ID, item ID, account ID, access token, funding source URL, and shareableId ID
+    // BURASI ÇOK ÖNEMLİ: accountData.account_id verisini buraya ekledik!
     await createBankAccount({
-      userId: user.$id,
+      userId: user.$id || user.id, 
       bankId: itemId,
-      accountId: accountData.account_id,
+      accountId: accountData.account_id, // <--- İŞTE EKSİK PARÇA BURASIYDI!
       accessToken,
       fundingSourceUrl,
       shareableId: encryptId(accountData.account_id),
     });
 
-    // Revalidate the path to reflect the changes
     revalidatePath("/");
 
-    // Return a success message
     return parseStringify({
       publicTokenExchange: "complete",
     });
@@ -280,52 +227,70 @@ export const exchangePublicToken = async ({
   }
 }
 
+// --- 9. BANKALARI GETİR ---
 export const getBanks = async ({ userId }: getBanksProps) => {
   try {
-    const { database } = await createAdminClient();
+    const banks = await db.bankAccount.findMany({
+      where: {
+        userId: userId
+      }
+    });
 
-    const banks = await database.listDocuments(
-      DATABASE_ID!,
-      BANK_COLLECTION_ID!,
-      [Query.equal('userId', [userId])]
-    )
-
-    return parseStringify(banks.documents);
+    return parseStringify(banks);
   } catch (error) {
     console.log(error)
   }
 }
 
+// --- 10. TEK BANKA GETİR ---
 export const getBank = async ({ documentId }: getBankProps) => {
   try {
-    const { database } = await createAdminClient();
+    if (!documentId) return null; // Koruma
 
-    const bank = await database.listDocuments(
-      DATABASE_ID!,
-      BANK_COLLECTION_ID!,
-      [Query.equal('$id', [documentId])]
-    )
+    // Önce ID (UUID) olarak dene
+    let bank = await db.bankAccount.findUnique({
+      where: {
+        id: documentId
+      }
+    });
 
-    return parseStringify(bank.documents[0]);
+    // Eğer ID ile bulunamazsa, Plaid Item ID ile dene
+    if (!bank) {
+      bank = await db.bankAccount.findFirst({
+        where: {
+          appwriteItemId: documentId
+        }
+      });
+    }
+
+    if (!bank) return null;
+
+    return parseStringify(bank);
   } catch (error) {
     console.log(error)
+    return null;
   }
 }
 
+// --- 11. ACCOUNT ID'YE GÖRE BANKA GETİR (GÜNCELLENDİ: Kapsamlı Arama) ---
 export const getBankByAccountId = async ({ accountId }: getBankByAccountIdProps) => {
   try {
-    const { database } = await createAdminClient();
+    // GÜNCELLEME: Sadece accountId'ye değil, shareableId'ye de bakıyoruz.
+    // Çünkü kopyaladığın ID şifrelenmiş olabilir.
+    const bank = await db.bankAccount.findFirst({
+      where: {
+        OR: [
+          { accountId: accountId },      // Normal Plaid ID
+          { shareableId: accountId }     // Şifrelenmiş ID (Kopyalanan bu olabilir)
+        ]
+      }
+    });
 
-    const bank = await database.listDocuments(
-      DATABASE_ID!,
-      BANK_COLLECTION_ID!,
-      [Query.equal('accountId', [accountId])]
-    )
+    if (!bank) return null;
 
-    if(bank.total !== 1) return null;
-
-    return parseStringify(bank.documents[0]);
+    return parseStringify(bank);
   } catch (error) {
-    console.log(error)
+    console.log(error);
+    return null;
   }
 }

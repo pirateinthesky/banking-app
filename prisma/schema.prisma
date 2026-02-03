@@ -1,0 +1,73 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = "mysql://root:root@localhost:3306/banking_app"
+}
+
+// KULLANICI
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  password     String
+  firstName    String?
+  lastName     String?
+  address1     String?
+  city         String?
+  state        String?
+  postalCode   String?
+  dateOfBirth  String?
+  ssn          String?
+  
+  dwollaCustomerId     String?
+  dwollaCustomerUrl    String?
+
+  bankAccounts BankAccount[]
+  transactions Transaction[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// BANKA HESAPLARI (Plaid Linkleri)
+model BankAccount {
+  id              String @id @default(uuid())
+  userId          String
+  accountId       String // <--- İŞTE BU EKSİKTİ, BUNU EKLE!
+  appwriteItemId  String 
+  accessToken     String 
+  fundingSourceUrl String 
+  shareableId     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// İŞLEMLER
+model Transaction {
+  id              String   @id @default(uuid())
+  name            String
+  amount          Float
+  channel         String?
+  category        String?
+  
+  senderId        String
+  senderBankId    String
+  
+  receiverId      String?
+  receiverBankId  String?
+  
+  email           String?
+  
+  date            DateTime @default(now())
+  
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

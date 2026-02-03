@@ -4,11 +4,21 @@ import { getAccounts } from '@/lib/actions/bank.actions';
 import { getLoggedInUser } from '@/lib/actions/user.actions';
 import { getTransactionsByBankId } from '@/lib/actions/transaction.actions'; // ÇAKAL MOD İÇİN GEREKLİ
 import React from 'react'
+import { redirect } from 'next/navigation'; // <-- 1. IMPORT EKLENDİ
 
 const Transfer = async () => {
   const loggedIn = await getLoggedInUser();
+
+  // --- 🛡️ KORUMA KALKANI BAŞLANGIÇ 🛡️ ---
+  // Eğer kullanıcı giriş yapmamışsa (null ise), aşağıya inip hata verme.
+  // Direkt giriş sayfasına postala.
+  if (!loggedIn) {
+    redirect('/sign-in');
+  }
+  // --- KORUMA KALKANI BİTİŞ ---
+
   const accounts = await getAccounts({ 
-    userId: loggedIn.$id 
+    userId: loggedIn.$id // Artık burası güvenli, çünkü loggedIn null olsaydı kod buraya gelemezdi.
   })
 
   if(!accounts) return null;

@@ -1,7 +1,7 @@
-"use server";
+'use server';
 
 import {
-  ACHClass,
+  AchDetails,
   CountryCode,
   TransferAuthorizationCreateRequest,
   TransferCreateRequest,
@@ -9,43 +9,70 @@ import {
   TransferType,
 } from "plaid";
 
-import { plaidClient } from "../plaid";
+import { plaidClient } from '@/lib/plaid';
 import { parseStringify } from "../utils";
 
 import { getTransactionsByBankId } from "./transaction.actions";
 import { getBanks, getBank } from "./user.actions";
 
-// Get multiple bank accounts
+// 1. ÇOKLU BANKA HESAPLARINI GETİR (BAKİYE DÜZELTİLDİ)
 export const getAccounts = async ({ userId }: getAccountsProps) => {
   try {
-    // get banks from db
     const banks = await getBanks({ userId });
 
+    if (!banks || banks.length === 0) {
+        return parseStringify({ data: [], totalBanks: 0, totalCurrentBalance: 0 });
+    }
+
     const accounts = await Promise.all(
-      banks?.map(async (bank: Bank) => {
-        // get each account info from plaid
+      banks.map(async (bank: Bank) => {
         const accountsResponse = await plaidClient.accountsGet({
           access_token: bank.accessToken,
         });
         const accountData = accountsResponse.data.accounts[0];
 
-        // get institution info from plaid
         const institution = await getInstitution({
           institutionId: accountsResponse.data.item.institution_id!,
         });
 
+        // --- ÇAKAL MOD (Ana Sayfa İçin) ---
+        // Veritabanındaki işlemleri bu hesap için de çekiyoruz
+        const transferTransactions = await getTransactionsByBankId({
+            bankId: accountData.account_id, // Plaid ID kullanıyoruz
+        });
+
+        let totalSent = 0;
+        let totalReceived = 0;
+
+        // Hesaplamayı yap
+        if(transferTransactions) {
+            transferTransactions.forEach((t: any) => {
+                if (t.senderBankId === accountData.account_id) {
+                    totalSent += t.amount;
+                } else if (t.receiverBankId === accountData.account_id) {
+                    totalReceived += t.amount;
+                }
+            });
+        }
+
+        // Güncel bakiyeyi hesapla
+        const realCurrentBalance = accountData.balances.current! - totalSent + totalReceived;
+        // ----------------------------------
+
         const account = {
           id: accountData.account_id,
           availableBalance: accountData.balances.available!,
-          currentBalance: accountData.balances.current!,
+          currentBalance: realCurrentBalance, // <-- ARTIK GÜNCEL!
           institutionId: institution.institution_id,
           name: accountData.name,
           officialName: accountData.official_name,
           mask: accountData.mask!,
           type: accountData.type as string,
           subtype: accountData.subtype! as string,
-          appwriteItemId: bank.$id,
+          appwriteItemId: bank.appwriteItemId,
           shareableId: bank.shareableId,
+          fundingSourceUrl: bank.fundingSourceUrl,
+          userId: bank.userId,
         };
 
         return account;
@@ -63,59 +90,86 @@ export const getAccounts = async ({ userId }: getAccountsProps) => {
   }
 };
 
-// Get one bank account
+// 2. TEK BİR HESABI GETİR (Burası zaten tamamdı)
 export const getAccount = async ({ appwriteItemId }: getAccountProps) => {
   try {
-    // get bank from db
+    if (!appwriteItemId) return null;
+
     const bank = await getBank({ documentId: appwriteItemId });
 
-    // get account info from plaid
+    if (!bank) return null;
+
     const accountsResponse = await plaidClient.accountsGet({
       access_token: bank.accessToken,
     });
     const accountData = accountsResponse.data.accounts[0];
 
-    // get transfer transactions from appwrite
-    const transferTransactionsData = await getTransactionsByBankId({
-      bankId: bank.$id,
+    // --- VERİTABANI İŞLEMLERİNİ ÇEK ---
+    const transferTransactions = await getTransactionsByBankId({
+      bankId: bank.accountId,
     });
 
-    const transferTransactions = transferTransactionsData.documents.map(
-      (transferData: Transaction) => ({
-        id: transferData.$id,
-        name: transferData.name!,
-        amount: transferData.amount!,
-        date: transferData.$createdAt,
-        paymentChannel: transferData.channel,
-        category: transferData.category,
-        type: transferData.senderBankId === bank.$id ? "debit" : "credit",
-      })
+    const transferTransactionsCust = transferTransactions.map(
+      (transferData: Transaction) => {
+        const amount = transferData.amount;
+        const senderBankId = transferData.senderBankId;
+
+        return {
+          id: transferData.id,
+          name: transferData.name,
+          amount: amount,
+          date: transferData.date,
+          paymentChannel: transferData.channel,
+          category: transferData.category,
+          type: senderBankId === bank.accountId ? "debit" : "credit",
+          accountId: bank.accountId,
+          amountOriginal: amount,
+          currency: 'USD',
+          image: transferData.receiverBankId ? '/icons/transfer.svg' : undefined,
+        };
+      }
     );
 
-    // get institution info from plaid
+    // --- ÇAKAL MOD (Detay Sayfası İçin) ---
+    let totalSent = 0;
+    let totalReceived = 0;
+
+    transferTransactions.forEach((t: any) => {
+      if (t.senderBankId === bank.accountId) {
+        totalSent += t.amount;
+      } else if (t.receiverBankId === bank.accountId) {
+        totalReceived += t.amount;
+      }
+    });
+
+    const realCurrentBalance = accountData.balances.current! - totalSent + totalReceived;
+    // --------------------------------------
+
     const institution = await getInstitution({
       institutionId: accountsResponse.data.item.institution_id!,
     });
 
     const transactions = await getTransactions({
-      accessToken: bank?.accessToken,
+      accessToken: bank.accessToken,
     });
 
     const account = {
       id: accountData.account_id,
       availableBalance: accountData.balances.available!,
-      currentBalance: accountData.balances.current!,
+      currentBalance: realCurrentBalance, // Güncel bakiye
       institutionId: institution.institution_id,
       name: accountData.name,
       officialName: accountData.official_name,
       mask: accountData.mask!,
       type: accountData.type as string,
       subtype: accountData.subtype! as string,
-      appwriteItemId: bank.$id,
+      appwriteItemId: bank.appwriteItemId,
+      shareableId: bank.shareableId,
+      fundingSourceUrl: bank.fundingSourceUrl,
+      userId: bank.userId,
     };
 
-    // sort transactions by date such that the most recent transaction is first
-      const allTransactions = [...transactions, ...transferTransactions].sort(
+    const allTransactions = [...transactions, ...transferTransactionsCust].sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     );
 
@@ -128,7 +182,7 @@ export const getAccount = async ({ appwriteItemId }: getAccountProps) => {
   }
 };
 
-// Get bank info
+// 3. KURUM BİLGİSİ
 export const getInstitution = async ({
   institutionId,
 }: getInstitutionProps) => {
@@ -142,11 +196,11 @@ export const getInstitution = async ({
 
     return parseStringify(intitution);
   } catch (error) {
-    console.error("An error occurred while getting the accounts:", error);
+    console.error("An error occurred while getting the institution:", error);
   }
 };
 
-// Get transactions
+// 4. PLAID İŞLEMLERİ
 export const getTransactions = async ({
   accessToken,
 }: getTransactionsProps) => {
@@ -154,10 +208,12 @@ export const getTransactions = async ({
   let transactions: any = [];
 
   try {
-    // Iterate through each page of new transaction updates for item
+    let cursor = undefined;
+
     while (hasMore) {
       const response = await plaidClient.transactionsSync({
         access_token: accessToken,
+        cursor: cursor,
       });
 
       const data = response.data;
@@ -176,10 +232,11 @@ export const getTransactions = async ({
       }));
 
       hasMore = data.has_more;
+      cursor = data.next_cursor;
     }
 
     return parseStringify(transactions);
   } catch (error) {
-    console.error("An error occurred while getting the accounts:", error);
+    return []; 
   }
 };

@@ -1,35 +1,45 @@
 import BankCard from '@/components/BankCard';
 import HeaderBox from '@/components/HeaderBox';
 import { getAccounts } from '@/lib/actions/bank.actions';
-import { getTransactionsByBankId } from '@/lib/actions/transaction.actions'; // Veritabanı erişimi
+import { getTransactionsByBankId } from '@/lib/actions/transaction.actions';
 import { getLoggedInUser } from '@/lib/actions/user.actions';
 import React from 'react'
+import { redirect } from 'next/navigation'; // <-- 1. IMPORT EKLENDİ
 
 const MyBanks = async () => {
   const loggedIn = await getLoggedInUser();
+
+  // --- 🛡️ KORUMA KALKANI 🛡️ ---
+  // Kullanıcı giriş yapmamışsa (null ise), aşağı inip $id okumaya çalışma.
+  // Direkt giriş sayfasına yönlendir.
+  if (!loggedIn) {
+    redirect('/sign-in');
+  }
+  // -----------------------------
+
   const accounts = await getAccounts({ 
     userId: loggedIn.$id 
   })
 
-  // Burada tüm kartları gezip, veritabanındaki işlemleri kontrol ederek
-  // bakiyelerini güncelleyeceğiz.
-  
+  // Hesaplar gelmediyse (veya hata varsa) sessizce çık
+  if (!accounts) return null;
+
+  // --- 😈 ÇAKALCA MOD V3 (MY BANKS SAYFASI) 😈 ---
+  // Tüm hesapları gezip, veritabanındaki işlemleri kontrol ederek
+  // bakiyelerini güncelliyoruz.
   if (accounts && accounts.data) {
-    // Promise.all kullanarak tüm hesaplar için işlemleri paralel yapıyoruz (Hız düşmesin)
     await Promise.all(accounts.data.map(async (account: any) => {
         
-        // Bu hesaba ait işlemleri veritabanından çek
         const dbTransactions = await getTransactionsByBankId({ bankId: account.appwriteItemId });
 
         if (dbTransactions && dbTransactions.documents) {
-            // İşlemleri gez ve bakiyeyi güncelle
             dbTransactions.documents.forEach((t: any) => {
                 const amount = parseFloat(t.amount);
 
                 // A) GÖNDEREN BU HESAPSA -> Bakiyeden Düş
                 if (t.senderBankId === account.appwriteItemId) {
                     account.currentBalance -= amount;
-                    account.availableBalance -= amount; // Varsa available da düşsün
+                    account.availableBalance -= amount;
                 }
 
                 // B) ALICI BU HESAPSA -> Bakiyeye Ekle

@@ -5,3 +5,7 @@
 .env.production.local
 node_modules
 .next
+/lib/generated/prisma
+.env.production
+build
+dist

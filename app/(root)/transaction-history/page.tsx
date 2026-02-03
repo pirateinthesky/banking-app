@@ -5,15 +5,24 @@ import { getAccount, getAccounts } from '@/lib/actions/bank.actions';
 import { getLoggedInUser } from '@/lib/actions/user.actions';
 import { getTransactionsByBankId } from '@/lib/actions/transaction.actions'; 
 import { formatAmount } from '@/lib/utils';
-import { BankTabItem } from '@/components/BankTabItem'; // TAB IMPORT
+import { BankTabItem } from '@/components/BankTabItem'; 
 import React from 'react'
+import { redirect } from 'next/navigation';
 
 const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProps) => {
+  // Sayfa numarasi yoksa 1 kabul et
   const currentPage = Number(page as string) || 1;
   const loggedIn = await getLoggedInUser();
-  const accounts = await getAccounts({ 
-    userId: loggedIn.$id 
-  })
+
+  // --- KORUMA KALKANI ---
+  if (!loggedIn) {
+    redirect('/sign-in');
+  }
+  // -----------------------------
+
+  const accounts = await getAccounts({
+    userId: loggedIn.$id,
+  });
 
   if(!accounts || !accounts.data || accounts.data.length === 0) return;
   
@@ -22,6 +31,7 @@ const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProp
 
   const account = await getAccount({ appwriteItemId })
 
+  // --- 😈 ÇAKALCA MOD V3 (BAKİYE GÜNCELLEME) 😈 ---
   if (account && account.data && appwriteItemId) {
     try {
         if (typeof appwriteItemId === 'string' && appwriteItemId.trim().length > 0) {
@@ -29,15 +39,18 @@ const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProp
             if (dbTransactions && dbTransactions.documents) {
                 dbTransactions.documents.forEach((t: any) => {
                     const amount = parseFloat(t.amount);
+                    // Para Çıkışı
                     if (t.senderBankId === appwriteItemId) {
                         account.data.currentBalance -= amount;
-                        if (typeof account.data.availableBalance === 'number') {
+                        // Available balance varsa onu da düş
+                        if (account.data.availableBalance && typeof account.data.availableBalance === 'number') {
                             account.data.availableBalance -= amount;
                         }
                     }
+                    // Para Girişi
                     if (t.receiverBankId === appwriteItemId) {
                         account.data.currentBalance += amount;
-                        if (typeof account.data.availableBalance === 'number') {
+                        if (account.data.availableBalance && typeof account.data.availableBalance === 'number') {
                             account.data.availableBalance += amount;
                         }
                     }
@@ -50,13 +63,23 @@ const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProp
   }
   // --- MOD BİTİŞ ---
 
+  // --- 🚨 SAYFALAMA HATASI DÜZELTME (PAGINATION GUARD) 🚨 ---
   const rowsPerPage = 10;
-  const totalPages = Math.ceil(account?.transactions.length / rowsPerPage);
+  const transactions = account?.transactions ?? [];
+  const totalPages = Math.ceil(transactions.length / rowsPerPage);
+
+  // KRİTİK KONTROL:
+  // Eğer kullanıcı URL'den 2. sayfayı istiyor (currentPage=2)
+  // AMA bu bankanın toplam sadece 1 sayfası varsa (totalPages=1)
+  // Kullanıcıyı zorla 1. sayfaya geri gönder.
+  if (totalPages > 0 && currentPage > totalPages) {
+      redirect(`/transaction-history/?id=${appwriteItemId}&page=1`);
+  }
+  // -----------------------------------------------------------
+
   const indexOfLastTransaction = currentPage * rowsPerPage;
   const indexOfFirstTransaction = indexOfLastTransaction - rowsPerPage;
-  const currentTransactions = account?.transactions.slice(
-    indexOfFirstTransaction, indexOfLastTransaction
-  )
+  const currentTransactions = transactions.slice(indexOfFirstTransaction, indexOfLastTransaction);
 
   return (
     <div className="transactions">
@@ -69,10 +92,8 @@ const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProp
 
       <div className="space-y-6">
         
-        {/* --- TAB KISMI (BURASI EKLENDİ) --- */}
         <div className="transactions-account">
           <div className="flex flex-col gap-2">
-            
             <h2 className="text-18 font-bold text-white">{account?.data.name}</h2>
             <p className="text-14 text-blue-25">
               {account?.data.officialName}
@@ -90,7 +111,7 @@ const TransactionHistory = async ({ searchParams: { id, page }}: SearchParamProp
           </div>
         </div>
 
-        {/* Sekmeler Mavi Kutunun ALTINA gelir */}
+        {/* Banka Sekmeleri */}
         <div className="flex items-center gap-4">
           {accountsData.map((a: Account) => (
              <BankTabItem 

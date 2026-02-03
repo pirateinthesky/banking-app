@@ -1,8 +1,9 @@
-"use server";
+'use server';
 
 import { Client } from "dwolla-v2";
 
-const getEnvironment = (): "production" | "sandbox" => {
+// 1. ORTAM AYARLARINI YAP
+const getEnvironment = () => {
   const environment = process.env.DWOLLA_ENV as string;
 
   switch (environment) {
@@ -17,49 +18,22 @@ const getEnvironment = (): "production" | "sandbox" => {
   }
 };
 
+// 2. DWOLLA İSTEMCİSİNİ BAŞLAT (Hata burada çıkıyordu, şimdi en tepede tanımlı)
 const dwollaClient = new Client({
   environment: getEnvironment(),
   key: process.env.DWOLLA_KEY as string,
   secret: process.env.DWOLLA_SECRET as string,
 });
 
-// Create a Dwolla Funding Source using a Plaid Processor Token
-export const createFundingSource = async (
-  options: CreateFundingSourceOptions
-) => {
-  try {
-    return await dwollaClient
-      .post(`customers/${options.customerId}/funding-sources`, {
-        name: options.fundingSourceName,
-        plaidToken: options.plaidToken,
-      })
-      .then((res) => res.headers.get("location"));
-  } catch (err) {
-    console.error("Creating a Funding Source Failed: ", err);
-  }
-};
+// --- FONKSİYONLAR ---
 
-export const createOnDemandAuthorization = async () => {
-  try {
-    const onDemandAuthorization = await dwollaClient.post(
-      "on-demand-authorizations"
-    );
-    const authLink = onDemandAuthorization.body._links;
-    return authLink;
-  } catch (err) {
-    console.error("Creating an On Demand Authorization Failed: ", err);
-  }
-};
-
-export const createDwollaCustomer = async (
-  newCustomer: NewDwollaCustomerParams
-) => {
+export const createDwollaCustomer = async (newCustomer: NewDwollaCustomerParams) => {
   try {
     return await dwollaClient
       .post("customers", newCustomer)
       .then((res) => res.headers.get("location"));
-  } catch (err) {
-    console.error("Creating a Dwolla Customer Failed: ", err);
+  } catch (error) {
+    console.error("Creating a Dwolla Customer Failed: ", error);
   }
 };
 
@@ -83,32 +57,37 @@ export const createTransfer = async ({
         value: amount,
       },
     };
+
     return await dwollaClient
       .post("transfers", requestBody)
       .then((res) => res.headers.get("location"));
-  } catch (err) {
-    console.error("Transfer fund failed: ", err);
+  } catch (error) {
+    console.error("Creating a Dwolla Transfer Failed: ", error);
   }
 };
 
+// BANKA BAĞLAMA (Hata Yönetimi Eklenmiş Hali)
 export const addFundingSource = async ({
   dwollaCustomerId,
   processorToken,
   bankName,
 }: AddFundingSourceParams) => {
   try {
-    // create dwolla auth link
-    const dwollaAuthLinks = await createOnDemandAuthorization();
+    // dwolla-v2 client for creating a funding source
+    const dwollaAuthLinks = await dwollaClient
+      .post(`customers/${dwollaCustomerId}/funding-sources`, {
+        name: bankName,
+        plaidToken: processorToken,
+      });
+      
+    return dwollaAuthLinks.headers.get("location");
+  } catch (error: any) {
+    // HATA YAKALAMA: Eğer banka zaten ekliyse (DuplicateResource), var olanın linkini dön.
+    if (error && error.body && error.body.code === "DuplicateResource") {
+      console.log("Dwolla: Banka zaten ekli, mevcut ID kullanılıyor.");
+      return error.body._links.about.href;
+    }
 
-    // add funding source to the dwolla customer & get the funding source url
-    const fundingSourceOptions = {
-      customerId: dwollaCustomerId,
-      fundingSourceName: bankName,
-      plaidToken: processorToken,
-      _links: dwollaAuthLinks,
-    };
-    return await createFundingSource(fundingSourceOptions);
-  } catch (err) {
-    console.error("Transfer fund failed: ", err);
+    console.error("Adding a Funding Source Failed: ", error);
   }
 };

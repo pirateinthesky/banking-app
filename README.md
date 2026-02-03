@@ -352,7 +352,7 @@ export const createLinkToken = async (user: User) => {
     return parseStringify({ linkToken: response.data.link_token });
   } catch (error) {
     console.error(
-      "An error occurred while creating a new CanBank user:",
+      "An error occurred while creating a new Horizon user:",
       error
     );
   }

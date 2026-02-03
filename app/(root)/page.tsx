@@ -5,10 +5,18 @@ import TotalBalanceBox from '@/components/TotalBalanceBox';
 import { getAccounts, getAccount } from '@/lib/actions/bank.actions';
 import { getLoggedInUser } from '@/lib/actions/user.actions';
 import { getTransactionsByBankId } from '@/lib/actions/transaction.actions';
+import { redirect } from 'next/navigation'; // <--- 1. BURASI EKLENDİ
 
 const Home = async ({ searchParams: { id, page } }: SearchParamProps) => {
   const currentPage = Number(page as string) || 1;
   const loggedIn = await getLoggedInUser();
+
+  
+  if (!loggedIn) {
+    redirect('/sign-in');
+  }
+  // -------------------------------------------------------------------------------
+
   const accounts = await getAccounts({ 
     userId: loggedIn.$id 
   })
@@ -17,7 +25,7 @@ const Home = async ({ searchParams: { id, page } }: SearchParamProps) => {
   
   const accountsData = accounts?.data;
 
-  // --- Hesaplamalar ---
+  // --- Hesaplamalar (Senin yazdığın özel mantık korunuyor) ---
   if (accountsData) {
     // 1. Hesapları gez ve bakiyeleri güncelle
     await Promise.all(accountsData.map(async (acc: any) => {
@@ -61,9 +69,11 @@ const Home = async ({ searchParams: { id, page } }: SearchParamProps) => {
   }
   // --- MOD BİTİŞ ---
 
-  const appwriteItemId = (id as string) || accountsData[0]?.appwriteItemId;
+// Eğer accountsData boşsa veya yoksa, appwriteItemId null olsun (patlamasın)
+const appwriteItemId = (id as string) || (accountsData && accountsData.length > 0 ? accountsData[0].appwriteItemId : null);
 
-  const account = await getAccount({ appwriteItemId })
+// Eğer ID varsa getir, yoksa null olsun
+const account = appwriteItemId ? await getAccount({ appwriteItemId }) : null;
 
   // Seçili hesap verisini de güncel listeden eşle
   const currentAccountData = accountsData.find((a: any) => a.appwriteItemId === appwriteItemId);
