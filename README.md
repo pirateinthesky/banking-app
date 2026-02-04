@@ -37,7 +37,7 @@ Make sure you have the following installed:
 Open your terminal and run the following commands:
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git](https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git)
+git clone [https://github.com/pirateinthesky/banking-app.git]
 cd Banking-App
 npm install
 ```
